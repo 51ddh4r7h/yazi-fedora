@@ -96,10 +96,11 @@ jobs:
               find /root/rpmbuild/RPMS/x86_64/ -name "yazi-${{ needs.check-version.outputs.version }}*.rpm" -exec cp {} /github/artifacts/ \;
 
          - name: Upload RPM
-           uses: actions/upload-artifact@v3
+           uses: actions/upload-artifact@v4 # Updated to v4
            with:
               name: rpm-package
               path: /github/artifacts/
+              retention-days: 5 # Optional: specify how long to keep the artifact
 
          - name: Create Release
            uses: softprops/action-gh-release@v1
