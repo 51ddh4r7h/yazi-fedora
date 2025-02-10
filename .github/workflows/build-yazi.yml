@@ -1,0 +1,90 @@
+name: Build Yazi for Fedora
+
+on:
+   push:
+      branches:
+         - main
+   pull_request:
+      branches:
+         - main
+   schedule:
+      - cron: "0 0 * * *" # Runs daily at midnight UTC
+   workflow_dispatch:
+
+jobs:
+   check-update:
+      runs-on: ubuntu-latest
+      steps:
+         - name: Check latest version on crates.io
+           id: check_version
+           run: |
+              LATEST_VERSION=$(curl -s https://crates.io/api/v1/crates/yazi-fm | jq -r .crate.max_stable_version)
+              echo "latest_version=$LATEST_VERSION" >> $GITHUB_ENV
+         - name: Compare with last built version
+           id: compare_versions
+           run: |
+              LAST_VERSION=$(curl -sL "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest" | grep -Po '(?<=tag/)[^">]+')
+              if [ "$LATEST_VERSION" != "$LAST_VERSION" ]; then
+                echo "new_version=true" >> $GITHUB_ENV
+              else
+                echo "new_version=false" >> $GITHUB_ENV
+              fi
+         - name: Trigger build
+           if: env.new_version == 'true'
+           run: echo "New version detected, proceeding with build."
+
+   build:
+      needs: check-update
+      if: needs.check-update.outputs.new_version == 'true'
+      runs-on: ubuntu-latest
+      container: fedora:latest
+      steps:
+         - name: Install dependencies
+           run: |
+              dnf install -y curl git make gcc-c++ rpm-build jq
+
+         - name: Install Rust
+           run: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source $HOME/.cargo/env
+              rustup update
+
+         - name: Checkout repository
+           uses: actions/checkout@v4
+
+         - name: Build Yazi
+           run: |
+              cargo install --locked yazi-fm yazi-cli
+              install -Dm755 ~/.cargo/bin/yazi /usr/local/bin/yazi
+
+         - name: Package as RPM
+           run: |
+              mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+              echo "[yazi]
+              Name: yazi
+              Version: ${{ env.latest_version }}
+              Release: 1%{?dist}
+              Summary: Blazing fast terminal file manager
+              License: MIT
+              Source0: yazi.tar.gz
+              BuildRoot: %{_tmppath}/%{name}-buildroot
+              %description
+              Yazi is a fast terminal file manager.
+              %install
+              install -Dm755 /usr/local/bin/yazi %{buildroot}/usr/bin/yazi
+              %files
+              /usr/bin/yazi
+              %changelog" > ~/rpmbuild/SPECS/yazi.spec
+              rpmbuild -bb ~/rpmbuild/SPECS/yazi.spec
+
+         - name: Upload artifact
+           uses: actions/upload-artifact@v4
+           with:
+              name: yazi-rpm
+              path: ~/rpmbuild/RPMS/**/*.rpm
+
+         - name: Create GitHub Release
+           uses: softprops/action-gh-release@v2
+           with:
+              tag_name: ${{ env.latest_version }}
+              files: ~/rpmbuild/RPMS/**/*.rpm
