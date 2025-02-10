@@ -6,7 +6,7 @@ on:
    workflow_dispatch: # Allows manual trigger
 
 permissions:
-   contents: write # Add explicit permissions for creating releases
+   contents: write
 
 jobs:
    check-version:
@@ -44,13 +44,14 @@ jobs:
               source "$HOME/.cargo/env"
               rustup update
 
-         - name: Setup RPM environment
+         - name: Setup RPM build environment
            run: |
-              rpmdev-setuptree
+              mkdir -p ${HOME}/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+              echo "%_topdir ${HOME}/rpmbuild" > ${HOME}/.rpmmacros
 
          - name: Create spec file
            run: |
-              cat > /root/rpmbuild/SPECS/yazi.spec << 'EOF'
+              cat > ${HOME}/rpmbuild/SPECS/yazi.spec << 'EOF'
               Name:           yazi
               Version:        ${{ needs.check-version.outputs.version }}
               Release:        1%{?dist}
@@ -71,12 +72,12 @@ jobs:
               # No source preparation needed as we're building directly from cargo
 
               %build
-              source "$HOME/.cargo/env"
+              source "${HOME}/.cargo/env"
               cargo install --locked yazi-fm yazi-cli
 
               %install
               mkdir -p %{buildroot}%{_bindir}
-              cp ~/.cargo/bin/yazi* %{buildroot}%{_bindir}/
+              cp ${HOME}/.cargo/bin/yazi* %{buildroot}%{_bindir}/
 
               %files
               %{_bindir}/yazi*
@@ -88,26 +89,26 @@ jobs:
 
          - name: Build RPM
            run: |
-              rpmbuild -ba /root/rpmbuild/SPECS/yazi.spec
+              rpmbuild -ba ${HOME}/rpmbuild/SPECS/yazi.spec
 
          - name: Prepare artifact directory
            run: |
-              mkdir -p /github/artifacts
-              find /root/rpmbuild/RPMS/x86_64/ -name "yazi-${{ needs.check-version.outputs.version }}*.rpm" -exec cp {} /github/artifacts/ \;
+              mkdir -p ${GITHUB_WORKSPACE}/artifacts
+              find ${HOME}/rpmbuild/RPMS/x86_64/ -name "yazi-${{ needs.check-version.outputs.version }}*.rpm" -exec cp {} ${GITHUB_WORKSPACE}/artifacts/ \;
 
          - name: Upload RPM
-           uses: actions/upload-artifact@v4 # Updated to v4
+           uses: actions/upload-artifact@v4
            with:
               name: rpm-package
-              path: /github/artifacts/
-              retention-days: 5 # Optional: specify how long to keep the artifact
+              path: ${GITHUB_WORKSPACE}/artifacts/
+              retention-days: 5
 
          - name: Create Release
            uses: softprops/action-gh-release@v1
            with:
               tag_name: ${{ needs.check-version.outputs.version }}
               name: Yazi ${{ needs.check-version.outputs.version }}
-              files: /github/artifacts/*.rpm
+              files: ${GITHUB_WORKSPACE}/artifacts/*.rpm
               generate_release_notes: true
            env:
               GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
