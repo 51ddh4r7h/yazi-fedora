@@ -1,101 +1,98 @@
-name: Build Yazi for Fedora
+name: Build and Release Yazi RPM
 
 on:
-   push:
-      branches:
-         - main
-   pull_request:
-      branches:
-         - main
    schedule:
-      - cron: "0 0 * * *" # Runs daily at midnight UTC
-   workflow_dispatch:
+      - cron: "0 0 * * *" # Runs daily at midnight
+   workflow_dispatch: # Allows manual trigger
 
 jobs:
-   check-update:
+   check-version:
       runs-on: ubuntu-latest
       outputs:
-         latest_version: ${{ steps.check_version.outputs.latest_version }}
-         new_version: ${{ steps.compare_versions.outputs.new_version }}
+         should_build: ${{ steps.check.outputs.should_build }}
+         version: ${{ steps.check.outputs.version }}
       steps:
-         - name: Check latest version on crates.io
-           id: check_version
+         - id: check
            run: |
-              LATEST_VERSION=$(curl -s https://crates.io/api/v1/crates/yazi-fm | jq -r .crate.max_stable_version)
-              echo "latest_version=$LATEST_VERSION" >> $GITHUB_ENV
-              echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-
-         - name: Compare with last built version
-           id: compare_versions
-           run: |
-              LAST_VERSION=$(curl -sL -o /dev/null -w "%{http_code}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest")
-              if [ "$LAST_VERSION" -eq "404" ]; then
-                echo "No previous release found, proceeding with build."
-                echo "new_version=true" >> $GITHUB_ENV
-                echo "new_version=true" >> $GITHUB_OUTPUT
+              LATEST=$(curl -s https://crates.io/api/v1/crates/yazi-fm | jq -r '.crate.max_version')
+              CURRENT=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name' || echo "0.0.0")
+              if [[ "$LATEST" != "$CURRENT" ]]; then
+                echo "should_build=true" >> $GITHUB_OUTPUT
+                echo "version=$LATEST" >> $GITHUB_OUTPUT
               else
-                LAST_VERSION_TAG=$(curl -sL "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest" | grep -Po '(?<=tag/)[^">]+')
-                if [ "$LATEST_VERSION" != "$LAST_VERSION_TAG" ]; then
-                  echo "new_version=true" >> $GITHUB_ENV
-                  echo "new_version=true" >> $GITHUB_OUTPUT
-                else
-                  echo "new_version=false" >> $GITHUB_ENV
-                  echo "new_version=false" >> $GITHUB_OUTPUT
-                fi
+                echo "should_build=false" >> $GITHUB_OUTPUT
               fi
 
    build:
-      needs: check-update
-      if: needs.check-update.outputs.new_version == 'true'
+      needs: check-version
+      if: needs.check-version.outputs.should_build == 'true'
       runs-on: ubuntu-latest
       container: fedora:latest
+
       steps:
          - name: Install dependencies
            run: |
-              dnf install -y curl git make gcc-c++ rpm-build jq
+              dnf update -y
+              dnf install -y curl gcc make openssl-devel pkg-config rpm-build rpmdevtools
 
          - name: Install Rust
            run: |
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-              source $HOME/.cargo/env
+              source "$HOME/.cargo/env"
               rustup update
 
-         - name: Checkout repository
-           uses: actions/checkout@v4
-
-         - name: Build Yazi
+         - name: Setup RPM environment
            run: |
-              cargo install --locked yazi-fm yazi-cli
-              install -Dm755 ~/.cargo/bin/yazi /usr/local/bin/yazi
+              rpmdev-setuptree
 
-         - name: Package as RPM
+         - name: Create spec file
            run: |
-              mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-              echo "[yazi]
-              Name: yazi
-              Version: ${{ needs.check-update.outputs.latest_version }}
-              Release: 1%{?dist}
-              Summary: Blazing fast terminal file manager
-              License: MIT
-              Source0: yazi.tar.gz
-              BuildRoot: %{_tmppath}/%{name}-buildroot
+              cat > ~/rpmbuild/SPECS/yazi.spec << 'EOF'
+              Name:           yazi
+              Version:        ${{ needs.check-version.outputs.version }}
+              Release:        1%{?dist}
+              Summary:        A terminal file manager written in Rust
+
+              License:        MIT
+              URL:            https://github.com/yazi-rs/yazi
+
+              BuildRequires:  gcc
+              BuildRequires:  make
+              BuildRequires:  openssl-devel
+              BuildRequires:  pkg-config
+
               %description
-              Yazi is a fast terminal file manager.
+              Yazi is a terminal file manager written in Rust, based on async I/O.
+
+              %prep
+              # No source preparation needed as we're building directly from cargo
+
+              %build
+              source "$HOME/.cargo/env"
+              cargo install --locked yazi-fm yazi-cli
+
               %install
-              install -Dm755 /usr/local/bin/yazi %{buildroot}/usr/bin/yazi
+              mkdir -p %{buildroot}%{_bindir}
+              cp ~/.cargo/bin/yazi* %{buildroot}%{_bindir}/
+
               %files
-              /usr/bin/yazi
-              %changelog" > ~/rpmbuild/SPECS/yazi.spec
-              rpmbuild -bb ~/rpmbuild/SPECS/yazi.spec
+              %{_bindir}/yazi*
 
-         - name: Upload artifact
-           uses: actions/upload-artifact@v4
-           with:
-              name: yazi-rpm
-              path: ~/rpmbuild/RPMS/**/*.rpm
+              %changelog
+              * $(date '+%a %b %d %Y') Builder <builder@fedoraproject.org> - ${{ needs.check-version.outputs.version }}-1
+              - Automated build of version ${{ needs.check-version.outputs.version }}
+              EOF
 
-         - name: Create GitHub Release
-           uses: softprops/action-gh-release@v2
+         - name: Build RPM
+           run: |
+              rpmbuild -ba ~/rpmbuild/SPECS/yazi.spec
+
+         - name: Create Release
+           uses: softprops/action-gh-release@v1
            with:
-              tag_name: ${{ needs.check-update.outputs.latest_version }}
-              files: ~/rpmbuild/RPMS/**/*.rpm
+              tag_name: ${{ needs.check-version.outputs.version }}
+              name: Yazi ${{ needs.check-version.outputs.version }}
+              files: ~/rpmbuild/RPMS/x86_64/yazi-${{ needs.check-version.outputs.version }}*.rpm
+              generate_release_notes: true
+           env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
