@@ -46,12 +46,12 @@ jobs:
 
          - name: Setup RPM build environment
            run: |
-              mkdir -p ${HOME}/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-              echo "%_topdir ${HOME}/rpmbuild" > ${HOME}/.rpmmacros
+              mkdir -p "$HOME/rpmbuild"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+              echo "%_topdir $HOME/rpmbuild" > "$HOME/.rpmmacros"
 
          - name: Create spec file
            run: |
-              cat > ${HOME}/rpmbuild/SPECS/yazi.spec << 'EOF'
+              cat > "$HOME/rpmbuild/SPECS/yazi.spec" << 'EOF'
               Name:           yazi
               Version:        ${{ needs.check-version.outputs.version }}
               Release:        1%{?dist}
@@ -72,12 +72,12 @@ jobs:
               # No source preparation needed as we're building directly from cargo
 
               %build
-              source "${HOME}/.cargo/env"
+              source "$HOME/.cargo/env"
               cargo install --locked yazi-fm yazi-cli
 
               %install
               mkdir -p %{buildroot}%{_bindir}
-              cp ${HOME}/.cargo/bin/yazi* %{buildroot}%{_bindir}/
+              cp "$HOME/.cargo/bin/yazi"* %{buildroot}%{_bindir}/
 
               %files
               %{_bindir}/yazi*
@@ -89,18 +89,30 @@ jobs:
 
          - name: Build RPM
            run: |
-              rpmbuild -ba ${HOME}/rpmbuild/SPECS/yazi.spec
+              source "$HOME/.cargo/env"
+              rpmbuild -ba "$HOME/rpmbuild/SPECS/yazi.spec"
+
+         - name: Debug RPM build
+           run: |
+              echo "Contents of $HOME/rpmbuild/RPMS:"
+              find "$HOME/rpmbuild/RPMS" -type f
+              echo "Contents of $HOME/rpmbuild/SRPMS:"
+              find "$HOME/rpmbuild/SRPMS" -type f
 
          - name: Prepare artifact directory
            run: |
-              mkdir -p ${GITHUB_WORKSPACE}/artifacts
-              find ${HOME}/rpmbuild/RPMS/x86_64/ -name "yazi-${{ needs.check-version.outputs.version }}*.rpm" -exec cp {} ${GITHUB_WORKSPACE}/artifacts/ \;
+              mkdir -p artifacts
+              # Copy both binary and source RPMs
+              find "$HOME/rpmbuild/RPMS" -type f -name "*.rpm" -exec cp {} artifacts/ \;
+              find "$HOME/rpmbuild/SRPMS" -type f -name "*.rpm" -exec cp {} artifacts/ \;
+              echo "Contents of artifacts directory:"
+              ls -la artifacts/
 
          - name: Upload RPM
            uses: actions/upload-artifact@v4
            with:
               name: rpm-package
-              path: ${GITHUB_WORKSPACE}/artifacts/
+              path: artifacts/
               retention-days: 5
 
          - name: Create Release
@@ -108,7 +120,7 @@ jobs:
            with:
               tag_name: ${{ needs.check-version.outputs.version }}
               name: Yazi ${{ needs.check-version.outputs.version }}
-              files: ${GITHUB_WORKSPACE}/artifacts/*.rpm
+              files: artifacts/*.rpm
               generate_release_notes: true
            env:
               GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
