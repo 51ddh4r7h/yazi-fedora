@@ -20,22 +20,26 @@ jobs:
            run: |
               LATEST_VERSION=$(curl -s https://crates.io/api/v1/crates/yazi-fm | jq -r .crate.max_stable_version)
               echo "latest_version=$LATEST_VERSION" >> $GITHUB_ENV
+
          - name: Compare with last built version
            id: compare_versions
            run: |
-              LAST_VERSION=$(curl -sL "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest" | grep -Po '(?<=tag/)[^">]+')
-              if [ "$LATEST_VERSION" != "$LAST_VERSION" ]; then
+              LAST_VERSION=$(curl -sL -o /dev/null -w "%{http_code}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest")
+              if [ "$LAST_VERSION" -eq "404" ]; then
+                echo "No previous release found, proceeding with build."
                 echo "new_version=true" >> $GITHUB_ENV
               else
-                echo "new_version=false" >> $GITHUB_ENV
+                LAST_VERSION_TAG=$(curl -sL "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest" | grep -Po '(?<=tag/)[^">]+')
+                if [ "$LATEST_VERSION" != "$LAST_VERSION_TAG" ]; then
+                  echo "new_version=true" >> $GITHUB_ENV
+                else
+                  echo "new_version=false" >> $GITHUB_ENV
+                fi
               fi
-         - name: Trigger build
-           if: env.new_version == 'true'
-           run: echo "New version detected, proceeding with build."
 
    build:
       needs: check-update
-      if: needs.check-update.outputs.new_version == 'true'
+      if: env.new_version == 'true'
       runs-on: ubuntu-latest
       container: fedora:latest
       steps:
