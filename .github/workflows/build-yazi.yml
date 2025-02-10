@@ -14,12 +14,16 @@ on:
 jobs:
    check-update:
       runs-on: ubuntu-latest
+      outputs:
+         latest_version: ${{ steps.check_version.outputs.latest_version }}
+         new_version: ${{ steps.compare_versions.outputs.new_version }}
       steps:
          - name: Check latest version on crates.io
            id: check_version
            run: |
               LATEST_VERSION=$(curl -s https://crates.io/api/v1/crates/yazi-fm | jq -r .crate.max_stable_version)
               echo "latest_version=$LATEST_VERSION" >> $GITHUB_ENV
+              echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
 
          - name: Compare with last built version
            id: compare_versions
@@ -28,18 +32,21 @@ jobs:
               if [ "$LAST_VERSION" -eq "404" ]; then
                 echo "No previous release found, proceeding with build."
                 echo "new_version=true" >> $GITHUB_ENV
+                echo "new_version=true" >> $GITHUB_OUTPUT
               else
                 LAST_VERSION_TAG=$(curl -sL "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest" | grep -Po '(?<=tag/)[^">]+')
                 if [ "$LATEST_VERSION" != "$LAST_VERSION_TAG" ]; then
                   echo "new_version=true" >> $GITHUB_ENV
+                  echo "new_version=true" >> $GITHUB_OUTPUT
                 else
                   echo "new_version=false" >> $GITHUB_ENV
+                  echo "new_version=false" >> $GITHUB_OUTPUT
                 fi
               fi
 
    build:
       needs: check-update
-      if: env.new_version == 'true'
+      if: needs.check-update.outputs.new_version == 'true'
       runs-on: ubuntu-latest
       container: fedora:latest
       steps:
@@ -66,7 +73,7 @@ jobs:
               mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
               echo "[yazi]
               Name: yazi
-              Version: ${{ env.latest_version }}
+              Version: ${{ needs.check-update.outputs.latest_version }}
               Release: 1%{?dist}
               Summary: Blazing fast terminal file manager
               License: MIT
@@ -90,5 +97,5 @@ jobs:
          - name: Create GitHub Release
            uses: softprops/action-gh-release@v2
            with:
-              tag_name: ${{ env.latest_version }}
+              tag_name: ${{ needs.check-update.outputs.latest_version }}
               files: ~/rpmbuild/RPMS/**/*.rpm
